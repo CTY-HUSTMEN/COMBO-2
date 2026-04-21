@@ -187,53 +187,77 @@ window.addStock = function(){
 // =====================
 // REALTIME STOCK (NEW - THEO HƯƠNG)
 // =====================
-function listenStock(){
 
+// Thêm sự kiện lắng nghe cho cả 2 ô chọn hương
+document.getElementById("counter").addEventListener("change", listenStock);
+document.getElementById("addHuongType1").addEventListener("change", listenStock);
+document.getElementById("addHuongType2").addEventListener("change", listenStock);
+document.getElementById("quantity").addEventListener("input", listenStock);
+
+function listenStock(){
     const counter = document.getElementById("counter").value;
-    const huongType = document.getElementById("addHuongType").value;
+    const h1 = document.getElementById("addHuongType1").value;
+    const h2 = document.getElementById("addHuongType2").value;
+    const qty = Number(document.getElementById("quantity").value) || 1;
     const btn = document.querySelector("#step2 button");
 
-    if(!counter || !huongType){
-        document.getElementById("stockDisplay").innerText = "Tồn kho: ...";
+    if(!counter || !h1){
+        document.getElementById("stockMui").innerText = "Hút mùi tủ lạnh: ...";
+        document.getElementById("stockHuong").innerText = "Túi tỏa hương: ...";
         btn.disabled = true;
         return;
     }
 
-    if(unsubscribe) unsubscribe();
+    if(window.unsub) window.unsub.forEach(fn => fn());
+    window.unsub = [];
 
-    const stockRef = ref(db, "kho/" + counter + "/COMBO_2/" + huongType + "/stock");
+    // Lắng nghe Hút mùi
+    const muiRef = ref(db, `kho/${counter}/HUT_MUI_TU_LANH/stock`);
+    window.unsub.push(onValue(muiRef, snap => {
+        const stock = snap.val() || 0;
+        document.getElementById("stockMui").innerText = `Hút mùi tủ lạnh: ${stock}`;
+        updateStatus();
+    }));
 
-    unsubscribe = onValue(stockRef, (snapshot) => {
+    // Lắng nghe Hương 1
+    const h1Ref = ref(db, `kho/${counter}/TUI_TOA_HUONG/${h1}/stock`);
+    window.unsub.push(onValue(h1Ref, snap => {
+        window.s1 = snap.val() || 0;
+        updateStatus();
+    }));
 
-        let stock = snapshot.val() || 0;
+    // Lắng nghe Hương 2 (nếu có)
+    if(h2 && h2 !== h1){
+        const h2Ref = ref(db, `kho/${counter}/TUI_TOA_HUONG/${h2}/stock`);
+        window.unsub.push(onValue(h2Ref, snap => {
+            window.s2 = snap.val() || 0;
+            updateStatus();
+        }));
+    } else {
+        window.s2 = null; 
+        updateStatus();
+    }
 
-        document.getElementById("stockDisplay").innerText =
-            "Tồn kho: " + stock;
-
-        if(stock <= 100){
-            document.getElementById("stockWarning").innerText =
-                "Sản phẩm chỉ còn lại " + stock;
+    function updateStatus(){
+        const mStock = parseInt(document.getElementById("stockMui").innerText.split(": ")[1]) || 0;
+        let isOk = mStock >= qty;
+        let huongText = `Hương 1: ${window.s1 || 0}`;
+        
+        if(h2 && h2 !== h1){
+            huongText += ` | Hương 2: ${window.s2 || 0}`;
+            if(window.s1 < qty || (window.s2 || 0) < qty) isOk = false;
         } else {
-            document.getElementById("stockWarning").innerText = "";
+            if(window.s1 < (qty * 2)) isOk = false;
         }
 
-        if(!isProcessing){
-            btn.disabled = stock <= 0;
-        }
-    });
+        document.getElementById("stockHuong").innerText = huongText;
+        btn.disabled = !isOk;
+        document.getElementById("stockWarning").innerText = isOk ? "" : "Không đủ hàng!";
+    }
 }
 
-// 🔥 GỌI KHI USER CHỌN
-document.getElementById("counter").addEventListener("change", listenStock);
-document.getElementById("addHuongType").addEventListener("change", listenStock);
-
-// =====================
-// SUBMIT
-// =====================
 window.submitForm = function(){
-
     let btn = document.querySelector("#step2 button");
-
     if(btn.disabled || isProcessing) return;
 
     isProcessing = true;
@@ -242,98 +266,85 @@ window.submitForm = function(){
 
     const quantity = Number(document.getElementById("quantity").value);
     const counter = document.getElementById("counter").value;
-    const huongType = document.getElementById("addHuongType").value;
-
-    if(!counter || !huongType){
-        alert("Chọn đầy đủ thông tin");
-        resetBtn();
-        return;
-    }
+    const h1 = document.getElementById("addHuongType1").value;
+    const h2 = document.getElementById("addHuongType2").value;
 
     runTransaction(ref(db), (root) => {
-
         if(!root) return root;
-
         const path = root.kho[counter];
-        if(!path) return;
+        
+        // 1. Kiểm tra hút mùi
+        if((path["HUT_MUI_TU_LANH"]?.stock || 0) < quantity) return;
 
-        // ===== NGUYÊN LIỆU =====
-        const mui = path["HUT_MUI_TU_LANH"]?.stock || 0;
-        const huong = path["TUI_TOA_HUONG"]?.[huongType]?.stock || 0;
-
-        if(mui < quantity || huong < quantity*2){
-            return; // fail
+        // 2. Kiểm tra & Trừ hương
+        if(h2 && h2 !== h1){
+            // Mix 2 loại: mỗi loại trừ 1 (nhân với số lượng combo)
+            if((path["TUI_TOA_HUONG"][h1]?.stock || 0) < quantity) return;
+            if((path["TUI_TOA_HUONG"][h2]?.stock || 0) < quantity) return;
+            
+            path["HUT_MUI_TU_LANH"].stock -= quantity;
+            path["TUI_TOA_HUONG"][h1].stock -= quantity;
+            path["TUI_TOA_HUONG"][h2].stock -= quantity;
+        } else {
+            // 1 loại: trừ 2
+            if((path["TUI_TOA_HUONG"][h1]?.stock || 0) < (quantity * 2)) return;
+            
+            path["HUT_MUI_TU_LANH"].stock -= quantity;
+            path["TUI_TOA_HUONG"][h1].stock -= (quantity * 2);
         }
 
-        // ===== TRỪ NGUYÊN LIỆU =====
-        path["HUT_MUI_TU_LANH"].stock -= quantity;
-        path["TUI_TOA_HUONG"][huongType].stock -= quantity * 2;
-
-        // ===== COMBO =====
+        // 3. Cập nhật thống kê Combo
         if(!path["COMBO_2"]) path["COMBO_2"] = {};
-        if(!path["COMBO_2"][huongType]){
-            path["COMBO_2"][huongType] = {
-                stock: 0,
-                daBan: 0,
-                daTang: 0
-            };
-        }
-
-        let combo = path["COMBO_2"][huongType];
-
-        // ===== CỘNG COMBO =====
-        combo.stock += quantity;
-
-        // ===== TRỪ COMBO NGAY =====
-        if(combo.stock < quantity){
-            return; // fail
-        }
-
-        combo.stock -= quantity;
-
-        if(type === "buy") combo.daBan += quantity;
-        if(type === "gift") combo.daTang += quantity;
+        const vName = (h2 && h2 !== h1) ? `${h1}_${h2}` : h1;
+        if(!path["COMBO_2"][vName]) path["COMBO_2"][vName] = {stock:0, daBan:0, daTang:0};
+        
+        if(type === "buy") path["COMBO_2"][vName].daBan += quantity;
+        else path["COMBO_2"][vName].daTang += quantity;
 
         return root;
-
     }).then(res => {
-
         if(!res.committed){
-            alert("Không đủ hàng");
+            alert("Lỗi: Không đủ hàng hoặc dữ liệu quầy sai!");
             return;
         }
 
-        // ===== LOG =====
-        const logRef = ref(db, "logs/" + type);
+        // ==========================================
+        // PHẦN BỊ THIẾU: ĐẨY DỮ LIỆU LÊN LOG FIREBASE
+        // ==========================================
+        const logRef = ref(db, "logs/" + type); // Ghi vào logs/buy hoặc logs/gift
+
+        const vName = (h2 && h2 !== h1) ? `${h1}_${h2}` : h1;
+        
+        // Tạo cấu trúc nguyên liệu đã tiêu hao để hiển thị đúng bên Google Sheet
+        let materialsLog = {
+            HUT_MUI_TU_LANH: quantity
+        };
+        if (h2 && h2 !== h1) {
+            materialsLog["TUI_TOA_HUONG_" + h1] = quantity;
+            materialsLog["TUI_TOA_HUONG_" + h2] = quantity;
+        } else {
+            materialsLog["TUI_TOA_HUONG_" + h1] = quantity * 2;
+        }
 
         push(logRef, {
             time: Date.now(),
             item: "COMBO_2",
-            variant: huongType, // 🔥 QUAN TRỌNG
+            variant: vName, 
             quantity: quantity,
             counter: counter,
-
-            materials: {
-                HUT_MUI_TU_LANH: quantity,
-                ["TUI_TOA_HUONG_" + huongType]: quantity * 2
-            }
+            materials: materialsLog
         });
 
-        alert("Thành công");
-
+        //alert("Thành công!");
         resetForm();
 
-    }).catch(() => {
-        alert("Lỗi hệ thống");
+    }).catch((err) => {
+        alert("Lỗi hệ thống: " + err.message);
     }).finally(() => {
-        resetBtn();
-    });
-
-    function resetBtn(){
-        btn.disabled = false;
-        btn.innerText = "Xác nhận";
         isProcessing = false;
-    }
+        btn.innerText = "Xác nhận";
+        btn.disabled = false;
+    });
 }
 </script>
 
@@ -371,10 +382,13 @@ button{width:100%;padding:15px;background:#ff9800;color:white;border:none;border
 
 <div id="step2" style="display:none;">
     <p id="stepTitle"></p>
+    <p style="font-weight:bold;margin-bottom:10px;">COMBO 2 (1 Hút mùi tủ lạnh + 2 Tỏa hương)</p>
 
-    <p style="font-weight:bold;margin-bottom:10px;">COMBO 2</p>
-
-    <div class="stock" id="stockDisplay">Tồn kho: ...</div>
+    <div id="stockInfo" style="background: #f9f9f9; padding: 10px; border-radius: 10px; margin-bottom: 15px; font-size: 16px; text-align: center;">
+        <div id="stockMui">Hút mùi tủ lạnh: ...</div>
+        <div id="stockHuong">Túi tỏa hương: ...</div>
+    </div>
+    
     <div class="warning" id="stockWarning"></div>
 
     <select id="counter">
@@ -382,8 +396,18 @@ button{width:100%;padding:15px;background:#ff9800;color:white;border:none;border
         <option value="A125">A125</option>
         <option value="B857">B857</option>  
     </select>
-    <select id="addHuongType">
-        <option value="">-- Chọn loại hương --</option>
+    <select id="addHuongType1">
+        <option value="">Chọn hương 1</option>
+        <option value="Nhai">Nhài</option>
+        <option value="Buoi">Bưởi</option>
+        <option value="Oai_huong">Oải hương</option>
+        <option value="Hoa_hong">Hoa Hồng</option>
+        <option value="Que">Quế</option>
+        <option value="Ca_phe">Cà phê</option>
+    </select>
+
+    <select id="addHuongType2">
+        <option value="">Chọn hương 2 (Để trống nếu lấy cùng loại)</option>
         <option value="Nhai">Nhài</option>
         <option value="Buoi">Bưởi</option>
         <option value="Oai_huong">Oải hương</option>
